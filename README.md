@@ -1,30 +1,426 @@
-# Honeypot SIEM
+Readme · MD
 
-Mini-SOC : honeypot Cowrie, stack Elastic (Elasticsearch, Kibana, Filebeat) et alertes Telegram.
+# 🍯 Honeypot SIEM
 
-## Architecture
+Mini-SOC (Security Operations Center) combinant un **honeypot SSH/Telnet (Cowrie)**, une **stack Elastic** (Elasticsearch, Kibana, Filebeat) et des **alertes automatiques Telegram**.
 
-Attaquant → Cowrie → Filebeat → Elasticsearch → Kibana
-↓
-Script alerts → Telegram
+Le système attire les attaquants, enregistre leurs actions, les visualise en temps réel sur un dashboard et alerte dès qu'une activité dangereuse est détectée.
 
-## Prérequis
+> ⚠️ **Projet éducatif.** À déployer uniquement sur un environnement isolé et sur des machines dont vous êtes propriétaire. Voir la section [Avertissement légal et sécurité](#-avertissement-légal-et-sécurité).
 
-Docker Desktop, Python 3, un bot Telegram (BotFather).
+---
 
-## Installation
+## 📑 Sommaire
 
-1. Copier `.env.example` vers `.env` et le remplir.
-2. `docker compose up -d elasticsearch kibana`
-3. Attendre 1 à 2 minutes, puis : `python elasticsearch/setup_elasticsearch.py`
-4. `docker compose up -d --build`
-5. Kibana (http://localhost:5601) → Stack Management → Saved Objects → Import → `kibana/dashboard.ndjson`
+1. [Fonctionnalités](#-fonctionnalités)
+2. [Architecture](#-architecture)
+3. [Technologies](#-technologies)
+4. [Structure du dépôt](#-structure-du-dépôt)
+5. [Prérequis](#-prérequis)
+6. [Installation pas à pas](#-installation-pas-à-pas)
+7. [Configuration](#-configuration)
+8. [Utilisation](#-utilisation)
+9. [Règles d'alerte](#-règles-dalerte)
+10. [Dashboard Kibana](#-dashboard-kibana)
+11. [Simulation d'attaques](#-simulation-dattaques)
+12. [Déploiement sur un VPS](#-déploiement-sur-un-vps)
+13. [Avertissement légal et sécurité](#-avertissement-légal-et-sécurité)
+14. [Dépannage](#-dépannage)
+15. [Commandes utiles](#-commandes-utiles)
+16. [Améliorations possibles](#-améliorations-possibles)
+17. [Auteur](#-auteur)
 
-## Tests
+---
 
-- Connexion au honeypot : `ssh -p 2222 root@localhost`
-- Simulation d'attaques : `python scripts/simulate_attacks.py`
+## ✨ Fonctionnalités
 
-## Avertissement
+- **Honeypot SSH/Telnet** (Cowrie) : simule un serveur Linux et enregistre IP, identifiants testés, commandes tapées et fichiers téléchargés.
+- **Collecte centralisée** des logs JSON avec Filebeat.
+- **Enrichissement GeoIP** : pays, ville et coordonnées de chaque IP attaquante, via un pipeline d'ingestion Elasticsearch.
+- **Dashboard Kibana** : top IP, mots de passe, utilisateurs, types d'événements, courbe temporelle et carte des attaques.
+- **Alertes Telegram automatiques** : brute force, commandes dangereuses, IP déjà signalées.
+- **Threat intelligence open source** : comparaison avec la liste d'IP malveillantes de blocklist.de, sans clé API.
+- **Anti-doublons** : un délai évite l'envoi répété de la même alerte.
+- **Simulateur d'attaques** pour tester le dashboard et les alertes.
+- **Déploiement en une commande** avec Docker Compose.
 
-Projet éducatif. Ne jamais exposer Elasticsearch ou Kibana sur Internet. Déployer le honeypot sur une machine isolée.
+---
+
+## 🏗 Architecture
+
+```mermaid
+flowchart LR
+    A[Attaquant] -->|SSH / Telnet| B[Cowrie<br/>Honeypot]
+    B -->|logs JSON| C[Filebeat]
+    C -->|pipeline GeoIP| D[(Elasticsearch)]
+    D --> E[Kibana<br/>Dashboard]
+    D --> F[Script alerts<br/>Python]
+    G[blocklist.de] -.->|liste d'IP| F
+    F -->|alertes| H[Telegram]
+```
+
+**Flux de données :**
+
+1. Cowrie écoute sur le port `2222` et écrit chaque événement dans `cowrie.json`.
+2. Filebeat lit ce fichier, renomme le champ `input` en `command_input` (pour éviter un conflit avec un champ Filebeat) et envoie les événements à Elasticsearch.
+3. Le pipeline `cowrie-geoip` ajoute les informations de géolocalisation.
+4. Kibana affiche les données ; le script `alerts` les interroge toutes les 60 secondes et envoie les alertes sur Telegram.
+
+---
+
+## 🛠 Technologies
+
+| Composant             | Outil                                       |
+| --------------------- | ------------------------------------------- |
+| Honeypot              | [Cowrie](https://github.com/cowrie/cowrie)  |
+| Collecte de logs      | Filebeat 8.15                               |
+| Stockage et recherche | Elasticsearch 8.15                          |
+| Visualisation         | Kibana 8.15 (Lens, Maps)                    |
+| Alertes               | Python 3, `requests`, `python-dotenv`       |
+| Notifications         | Telegram Bot API                            |
+| Threat intelligence   | blocklist.de (liste SSH)                    |
+| Géolocalisation       | GeoLite2 (processeur GeoIP d'Elasticsearch) |
+| Conteneurisation      | Docker et Docker Compose                    |
+
+---
+
+## 📁 Structure du dépôt
+
+```
+honeypot-siem/
+├── docker-compose.yml            # Orchestration des 5 services
+├── filebeat.yml                  # Configuration de la collecte de logs
+├── .env.example                  # Modèle de configuration (à copier en .env)
+├── .gitignore
+├── README.md
+├── alerts/
+│   ├── Dockerfile                # Image du service d'alertes
+│   └── alert.py                  # Règles de détection et envoi Telegram
+├── elasticsearch/
+│   └── setup_elasticsearch.py    # Crée le pipeline GeoIP et le template d'index
+├── kibana/
+│   └── dashboard.ndjson          # Export du dashboard (Saved Objects)
+├── scripts/
+│   └── simulate_attacks.py       # Génère de fausses attaques
+└── docs/
+    └── (captures d'écran)
+```
+
+---
+
+## ✅ Prérequis
+
+- **Docker Desktop** (avec WSL 2 sous Windows) et Docker Compose v2.
+- **Python 3.9+** avec `pip` (pour les scripts d'initialisation et de simulation).
+- **Git**.
+- **4 Go de RAM minimum** alloués à Docker (8 Go conseillés).
+- Un **bot Telegram** : créé avec [@BotFather](https://t.me/BotFather).
+  Sous Windows, pour limiter la mémoire utilisée par WSL 2, créez `%USERPROFILE%\.wslconfig` :
+
+```ini
+[wsl2]
+memory=4GB
+processors=2
+```
+
+Puis exécutez `wsl --shutdown` et relancez Docker Desktop.
+
+---
+
+## 🚀 Installation pas à pas
+
+### 1. Cloner le dépôt
+
+```bash
+git clone https://github.com/TON_PSEUDO/honeypot-siem.git
+cd honeypot-siem
+```
+
+### 2. Créer le bot Telegram
+
+1. Dans Telegram, ouvrez **@BotFather** et envoyez `/newbot`.
+2. Choisissez un nom puis un username se terminant par `bot`.
+3. Copiez le **token** fourni.
+4. Ouvrez la conversation avec **votre** bot, cliquez sur **Start** et envoyez un message.
+5. Récupérez votre `chat_id` en ouvrant (en remplaçant `TOKEN`) :
+
+```
+   https://api.telegram.org/botTOKEN/getUpdates
+```
+
+Le `chat_id` est la valeur de `"chat": {"id": ...}`.
+
+### 3. Configurer l'environnement
+
+```bash
+cp .env.example .env        # Windows PowerShell : copy .env.example .env
+```
+
+Remplissez `.env` (voir [Configuration](#-configuration)).
+
+### 4. Démarrer Elasticsearch et Kibana
+
+```bash
+docker compose up -d elasticsearch kibana
+```
+
+Attendez 1 à 2 minutes, puis vérifiez :
+
+- Elasticsearch : http://localhost:9200 (doit afficher du JSON)
+- Kibana : http://localhost:5601
+
+### 5. Créer le pipeline GeoIP et le template d'index
+
+```bash
+pip install requests python-dotenv
+python elasticsearch/setup_elasticsearch.py
+```
+
+Vous devez obtenir deux lignes avec le code `200`. Cette étape doit être faite **avant** que Filebeat n'envoie des données.
+
+### 6. Démarrer tous les services
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+Les 5 conteneurs (`cowrie`, `elasticsearch`, `kibana`, `filebeat`, `alerts`) doivent être **Up**.
+
+### 7. Importer le dashboard
+
+1. Kibana → menu ☰ → **Stack Management → Saved Objects**.
+2. **Import** → sélectionnez `kibana/dashboard.ndjson`.
+3. Ouvrez **Analytics → Dashboard → Honeypot SOC**.
+   Si l'import ne contient pas la Data View, créez-la : **Stack Management → Data Views → Create data view**, nom `cowrie`, pattern `cowrie-*`, champ de temps `@timestamp`.
+
+### 8. Vérifier le fonctionnement
+
+```bash
+ssh -p 2222 root@localhost
+```
+
+Utilisez n'importe quel mot de passe (Cowrie accepte la plupart d'entre eux), puis tapez quelques commandes, par exemple `ls`, `whoami` et `wget http://example.com/test.sh`.
+
+Résultats attendus :
+
+- les événements apparaissent dans **Kibana → Discover** ;
+- un message d'alerte arrive sur Telegram en moins d'une minute ;
+- `docker compose logs alerts` affiche `Telegram : 200 ...`.
+  Si SSH affiche `REMOTE HOST IDENTIFICATION HAS CHANGED`, exécutez :
+
+```bash
+ssh-keygen -R "[localhost]:2222"
+```
+
+---
+
+## ⚙️ Configuration
+
+### Fichier `.env`
+
+| Variable           | Description                                                                | Exemple                       |
+| ------------------ | -------------------------------------------------------------------------- | ----------------------------- |
+| `TELEGRAM_TOKEN`   | Token du bot, fourni par BotFather                                         | `123456:ABC...`               |
+| `TELEGRAM_CHAT_ID` | Identifiant de votre conversation Telegram                                 | `987654321`                   |
+| `BRUTE_THRESHOLD`  | Nombre de tentatives par minute et par IP déclenchant l'alerte brute force | `50` (mettre `5` pour tester) |
+
+> 🔒 Ne publiez **jamais** votre `.env`. Si un token a été exposé, révoquez-le avec `/revoke` dans @BotFather.
+
+### Paramètres du script d'alertes (`alerts/alert.py`)
+
+| Paramètre       | Valeur par défaut                                      | Rôle                                                      |
+| --------------- | ------------------------------------------------------ | --------------------------------------------------------- |
+| `COOLDOWN`      | `600`                                                  | Délai en secondes entre deux alertes identiques           |
+| `DANGEROUS`     | `wget`, `curl`, `chmod +x`, `rm -rf`, `nc `, `bash -i` | Mots-clés de commandes dangereuses                        |
+| `BLOCKLIST_URL` | liste SSH de blocklist.de                              | Source des IP malveillantes (rechargée toutes les heures) |
+
+### Pipeline d'ingestion et template
+
+`elasticsearch/setup_elasticsearch.py` crée :
+
+- le pipeline **`cowrie-geoip`**, qui ajoute le bloc `geoip` à partir de `src_ip` ;
+- le template **`cowrie-template`**, qui déclare `geoip.location` en `geo_point` et force les champs texte en `keyword`.
+
+---
+
+## 📖 Utilisation
+
+### Événements Cowrie principaux
+
+| `eventid`                      | Signification                                          |
+| ------------------------------ | ------------------------------------------------------ |
+| `cowrie.session.connect`       | Nouvelle connexion                                     |
+| `cowrie.login.failed`          | Tentative de connexion échouée                         |
+| `cowrie.login.success`         | Connexion acceptée par le honeypot                     |
+| `cowrie.command.input`         | Commande tapée par l'attaquant (champ `command_input`) |
+| `cowrie.session.file_download` | Fichier téléchargé par l'attaquant                     |
+
+### Recherches utiles dans Kibana (Discover, syntaxe KQL)
+
+```
+eventid : "cowrie.command.input"
+eventid : "cowrie.login.failed" and src_ip : "1.2.3.4"
+geoip.country_name : "China"
+```
+
+---
+
+## 🚨 Règles d'alerte
+
+| Règle                      | Condition                                                                         | Message Telegram                              |
+| -------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------- |
+| **Brute force**            | Au moins `BRUTE_THRESHOLD` tentatives de connexion en 1 minute depuis une même IP | `🚨 Brute force : IP (N tentatives en 1 min)` |
+| **Commande dangereuse**    | Une commande contient un mot-clé de la liste `DANGEROUS`                          | `⚠️ Commande dangereuse de IP : commande`     |
+| **IP malveillante connue** | L'IP figure dans la liste blocklist.de                                            | `🔴 IP malveillante connue : IP`              |
+
+Chaque alerte identique est limitée à une toutes les 10 minutes (`COOLDOWN`).
+
+---
+
+## 📊 Dashboard Kibana
+
+Le dashboard **Honeypot SOC** contient :
+
+- Top 10 des IP attaquantes
+- Top mots de passe et top utilisateurs testés
+- Commandes les plus tapées (champ `command_input`)
+- Répartition des types d'événements
+- Courbe du nombre d'événements dans le temps
+- Carte mondiale des attaques (champ `geoip.location`)
+  **Exporter le dashboard après modification :** Stack Management → Saved Objects → cocher le dashboard → **Export** (avec _Include related objects_), puis remplacer `kibana/dashboard.ndjson`.
+
+> ℹ️ En local, toutes les connexions viennent d'une IP privée Docker (par exemple `172.18.0.1`). Les adresses privées ne peuvent pas être géolocalisées : la carte ne se remplit qu'avec des IP publiques, c'est-à-dire sur un serveur exposé ou avec le simulateur.
+
+---
+
+## 🧪 Simulation d'attaques
+
+Le script injecte de faux événements provenant d'IP publiques de plusieurs pays.
+
+```bash
+pip install requests
+
+python scripts/simulate_attacks.py              # 60 sessions réparties sur 24 h
+python scripts/simulate_attacks.py spread 150   # 150 sessions
+python scripts/simulate_attacks.py burst        # brute force immédiat (déclenche l'alerte)
+```
+
+Après exécution : Kibana → **Stack Management → Data Views → cowrie → 🔄 (Refresh)**, puis rafraîchissez le dashboard.
+
+**Supprimer les données simulées** (dans Kibana → Dev Tools) :
+
+```json
+POST cowrie-*/_delete_by_query
+{ "query": { "term": { "simulated": true } } }
+```
+
+> Les données simulées portent le champ `simulated: true`. Ne les présentez pas comme de vraies attaques dans un rapport.
+
+### Test avec de vrais outils d'attaque
+
+Contre **votre propre honeypot uniquement** :
+
+```bash
+docker run -it --rm kalilinux/kali-rolling bash
+apt update && apt install -y hydra
+hydra -l root -P pass.txt -s 2222 -t 4 ssh://host.docker.internal
+```
+
+---
+
+## ☁️ Déploiement sur un VPS
+
+Pour recevoir de vraies attaques, déployez sur un serveur dédié et jetable (jamais sur votre PC ni votre réseau domestique).
+
+1. **Louer un VPS** Ubuntu 22.04 avec au moins 4 Go de RAM.
+2. **Sécuriser l'accès administrateur** : déplacer le vrai SSH sur un autre port (par exemple `22222`), utiliser une clé SSH, activer le pare-feu :
+
+```bash
+   sudo ufw allow 22222/tcp
+   sudo ufw allow 22/tcp
+   sudo ufw enable
+```
+
+3. **Installer Docker**, puis cloner le dépôt et créer le `.env`.
+4. **Adapter `docker-compose.yml`** :
+   - Cowrie écoute sur le port 22 : `"22:2222"`.
+   - Elasticsearch et Kibana restent **privés** : `"127.0.0.1:9200:9200"` et `"127.0.0.1:5601:5601"`.
+5. Lancer la stack et initialiser Elasticsearch (étapes 4 à 6 de l'installation).
+6. **Accéder à Kibana via un tunnel SSH** depuis votre PC :
+
+```bash
+   ssh -p 22222 -L 5601:localhost:5601 utilisateur@IP_DU_VPS
+```
+
+Puis ouvrir http://localhost:5601.
+
+---
+
+## 🔐 Avertissement légal et sécurité
+
+- Ce projet est **strictement défensif et pédagogique**.
+- Ne **jamais** exposer Elasticsearch ou Kibana sur Internet : la sécurité est désactivée dans cette configuration (`xpack.security.enabled=false`).
+- Isolez le honeypot du reste de votre réseau et ne placez **aucune donnée réelle** dessus.
+- Limitez les connexions sortantes du honeypot avec un pare-feu.
+- Les adresses IP collectées sont des **données personnelles** dans certaines juridictions (RGPD). Informez-vous sur les obligations de conservation et de traitement avant un déploiement public.
+- N'utilisez les outils d'attaque (Hydra, Nmap...) que contre vos propres systèmes.
+- Les secrets (`.env`) ne doivent jamais être versionnés.
+
+---
+
+## 🧯 Dépannage
+
+| Problème                                               | Cause probable                                                   | Solution                                                              |
+| ------------------------------------------------------ | ---------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `env file ... .env not found`                          | Fichier `.env` absent                                            | `cp .env.example .env` et remplir                                     |
+| `volumes.alerts additional properties ... not allowed` | Le service `alerts` est placé après `volumes:`                   | Le déplacer sous `services:`                                          |
+| `REMOTE HOST IDENTIFICATION HAS CHANGED`               | Clé SSH de Cowrie régénérée                                      | `ssh-keygen -R "[localhost]:2222"`                                    |
+| Kibana : « No results found »                          | Période trop courte                                              | Choisir _Last 24 hours_                                               |
+| Panneau « Commandes » vide ou incorrect                | Champ `input` en conflit avec Filebeat                           | Utiliser `command_input` (renommage dans `filebeat.yml`)              |
+| Carte vide                                             | IP privées non géolocalisables, ou couche _Documents_ absente    | Utiliser le simulateur et ajouter la couche sur `geoip.location`      |
+| `Telegram : 401`                                       | Token incorrect ou révoqué                                       | Vérifier `.env`                                                       |
+| `Telegram : 400`                                       | `chat_id` incorrect, ou bot jamais démarré                       | Cliquer sur **Start** dans le bot et revérifier le `chat_id`          |
+| Erreur de template (data stream)                       | Template sans `"data_stream": {}` ou ancien data stream existant | `DELETE _data_stream/cowrie-*` puis relancer `setup_elasticsearch.py` |
+| Elasticsearch plante (mémoire)                         | RAM insuffisante pour WSL 2                                      | Augmenter `memory` dans `.wslconfig`, ou réduire `ES_JAVA_OPTS`       |
+
+---
+
+## 🧰 Commandes utiles
+
+| Action                                        | Commande                        |
+| --------------------------------------------- | ------------------------------- |
+| Démarrer                                      | `docker compose up -d`          |
+| Reconstruire après modification               | `docker compose up -d --build`  |
+| Mettre en pause                               | `docker compose stop`           |
+| Reprendre                                     | `docker compose start`          |
+| Supprimer les conteneurs (données conservées) | `docker compose down`           |
+| **Tout effacer, données comprises**           | `docker compose down -v`        |
+| État des services                             | `docker compose ps`             |
+| Logs d'un service                             | `docker compose logs -f alerts` |
+
+---
+
+## 🔭 Améliorations possibles
+
+- Blocage automatique des IP malveillantes (pare-feu) avec liste blanche
+- Rapport quotidien automatique (résumé par Telegram ou email)
+- Association des comportements aux techniques MITRE ATT&CK
+- Analyse des fichiers capturés (hash SHA-256, VirusTotal)
+- Détection d'anomalies par machine learning (Isolation Forest)
+- Honeypots supplémentaires (HTTP, FTP, base de données)
+- Authentification et TLS sur Elasticsearch et Kibana
+- CI/CD avec GitHub Actions et déploiement automatisé (Ansible)
+
+---
+
+## 👤 Auteur
+
+**Prénom Nom** — Projet de développement et sécurité des réseaux
+GitHub : [@TON_PSEUDO](https://github.com/TON_PSEUDO)
+
+---
+
+_Ce projet est fourni à des fins éducatives, sans garantie. L'auteur décline toute responsabilité en cas d'usage inapproprié._
+
+Claude a terminé sa réponse.
