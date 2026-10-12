@@ -216,16 +216,16 @@ ssh-keygen -R "[localhost]:2222"
 
 ### Fichier `.env`
 
-| Variable           | Description                                                                | Exemple                       |
-| ------------------ | -------------------------------------------------------------------------- | ----------------------------- |
-| `TELEGRAM_TOKEN`   | Token du bot, fourni par BotFather                                         | `123456:ABC...`               |
-| `TELEGRAM_CHAT_ID` | Identifiant de votre conversation Telegram                                 | `987654321`                   |
-| `BRUTE_THRESHOLD`  | Nombre de tentatives par minute et par IP déclenchant l'alerte brute force | `50` (mettre `5` pour tester) |
-| `ELASTIC_PASSWORD` / `KIBANA_PASSWORD` / `KIBANA_ENCRYPTION_KEY` | Mots de passe et clé de chiffrement (obligatoires) | voir `.env.example` |
-| `SMTP_*`, `ALERT_EMAIL_TO` | Envoi des alertes par email (optionnel) | `smtp.gmail.com`, `587` |
-| `ABUSEIPDB_KEY`, `ABUSE_THRESHOLD` | Score de réputation AbuseIPDB (optionnel, 80 par défaut) | |
-| `SPIKE_FACTOR`, `SPIKE_MIN_EVENTS` | Pic d'activité : x fois la moyenne horaire ET minimum absolu | `3`, `200` |
-| `REPORT_INTERVAL_HOURS`, `RETENTION_DAYS` | Fréquence des rapports ; durée de conservation des logs | `24`, `90` |
+| Variable                                                         | Description                                                                | Exemple                       |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------------------- |
+| `TELEGRAM_TOKEN`                                                 | Token du bot, fourni par BotFather                                         | `123456:ABC...`               |
+| `TELEGRAM_CHAT_ID`                                               | Identifiant de votre conversation Telegram                                 | `987654321`                   |
+| `BRUTE_THRESHOLD`                                                | Nombre de tentatives par minute et par IP déclenchant l'alerte brute force | `50` (mettre `5` pour tester) |
+| `ELASTIC_PASSWORD` / `KIBANA_PASSWORD` / `KIBANA_ENCRYPTION_KEY` | Mots de passe et clé de chiffrement (obligatoires)                         | voir `.env.example`           |
+| `SMTP_*`, `ALERT_EMAIL_TO`                                       | Envoi des alertes par email (optionnel)                                    | `smtp.gmail.com`, `587`       |
+| `ABUSEIPDB_KEY`, `ABUSE_THRESHOLD`                               | Score de réputation AbuseIPDB (optionnel, 80 par défaut)                   |                               |
+| `SPIKE_FACTOR`, `SPIKE_MIN_EVENTS`                               | Pic d'activité : x fois la moyenne horaire ET minimum absolu               | `3`, `200`                    |
+| `REPORT_INTERVAL_HOURS`, `RETENTION_DAYS`                        | Fréquence des rapports ; durée de conservation des logs                    | `24`, `90`                    |
 
 > 🔒 Ne publiez **jamais** votre `.env`. Si un token a été exposé, révoquez-le avec `/revoke` dans @BotFather.
 
@@ -272,13 +272,13 @@ geoip.country_name : "China"
 
 Conformes à la section 7 du cahier des charges. Chaque alerte est aussi archivée dans l'index `honeypot-alerts` (visible dans Kibana, créer une Data View `honeypot-alerts*`).
 
-| Règle (`rule`)        | Condition                                                             | Niveau   | Canaux            |
-| --------------------- | --------------------------------------------------------------------- | -------- | ----------------- |
-| `brute_force`         | ≥ `BRUTE_THRESHOLD` tentatives de connexion en 1 min depuis une IP    | Élevé    | Telegram          |
-| `dangerous_command`   | `wget`, `curl`, `chmod +x`, `rm -rf`, `nc`, `bash -i`… dans la session | Critique | Telegram + email  |
-| `malicious_ip`        | Score AbuseIPDB ≥ `ABUSE_THRESHOLD` (ou liste blocklist.de)           | Moyen    | Email             |
-| `file_download`       | Dépôt/téléchargement de fichier sur le honeypot                       | Élevé    | Telegram          |
-| `activity_spike`      | Événements/heure > `SPIKE_FACTOR` x moyenne des 24 h précédentes      | Moyen    | Email             |
+| Règle (`rule`)      | Condition                                                              | Niveau   | Canaux           |
+| ------------------- | ---------------------------------------------------------------------- | -------- | ---------------- |
+| `brute_force`       | ≥ `BRUTE_THRESHOLD` tentatives de connexion en 1 min depuis une IP     | Élevé    | Telegram         |
+| `dangerous_command` | `wget`, `curl`, `chmod +x`, `rm -rf`, `nc`, `bash -i`… dans la session | Critique | Telegram + email |
+| `malicious_ip`      | Score AbuseIPDB ≥ `ABUSE_THRESHOLD` (ou liste blocklist.de)            | Moyen    | Email            |
+| `file_download`     | Dépôt/téléchargement de fichier sur le honeypot                        | Élevé    | Telegram         |
+| `activity_spike`    | Événements/heure > `SPIKE_FACTOR` x moyenne des 24 h précédentes       | Moyen    | Email            |
 
 Anti-doublon : une même alerte (règle + IP) n'est renvoyée qu'après `COOLDOWN` secondes ; les commandes et fichiers ne sont alertés qu'une fois par événement, même après redémarrage. Le délai de détection est d'au plus ~30 s + délai de collecte.
 
@@ -297,15 +297,15 @@ Le service `reports` génère toutes les `REPORT_INTERVAL_HOURS` heures un rappo
 
 ## ✅ Plan de tests (section 9 du cahier des charges)
 
-| Test | Commande | Résultat attendu |
-| ---- | -------- | ---------------- |
-| Connexion | `ssh -p 2222 root@localhost` | Événement dans Kibana Discover |
-| Telnet | `telnet localhost 2223` | Événement `cowrie.session.connect` |
-| Brute force | `hydra -l root -P pass.txt -t 4 ssh://IP -s 2222` ou `python scripts/simulate_attacks.py burst` | Alerte Telegram < 1 min |
-| Scan de ports | `nmap -sS -p 2222,2223 IP` | Connexions enregistrées |
-| Commande dangereuse | `wget http://x` dans la session, ou `simulate_attacks.py command` | Alerte critique Telegram + email |
-| Pic d'activité | `python scripts/simulate_attacks.py spike` | Alerte email |
-| Résilience / Isolation | voir ci-dessus | Reprise auto / flux bloqué |
+| Test                   | Commande                                                                                        | Résultat attendu                   |
+| ---------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------- |
+| Connexion              | `ssh -p 2222 root@localhost`                                                                    | Événement dans Kibana Discover     |
+| Telnet                 | `telnet localhost 2223`                                                                         | Événement `cowrie.session.connect` |
+| Brute force            | `hydra -l root -P pass.txt -t 4 ssh://IP -s 2222` ou `python scripts/simulate_attacks.py burst` | Alerte Telegram < 1 min            |
+| Scan de ports          | `nmap -sS -p 2222,2223 IP`                                                                      | Connexions enregistrées            |
+| Commande dangereuse    | `wget http://x` dans la session, ou `simulate_attacks.py command`                               | Alerte critique Telegram + email   |
+| Pic d'activité         | `python scripts/simulate_attacks.py spike`                                                      | Alerte email                       |
+| Résilience / Isolation | voir ci-dessus                                                                                  | Reprise auto / flux bloqué         |
 
 Le simulateur lit `ELASTIC_PASSWORD` dans l'environnement : `ELASTIC_PASSWORD=... python scripts/simulate_attacks.py burst`.
 
@@ -447,8 +447,8 @@ Puis ouvrir http://localhost:5601.
 
 ## 👤 Auteur
 
-**Prénom Nom** — Projet de développement et sécurité des réseaux
-GitHub : [@TON_PSEUDO](https://github.com/TON_PSEUDO)
+**Ghazouani Habib** — Projet de développement et sécurité des réseaux
+GitHub : [@Habib101-cmd](https://github.com/Habib101-cmd)
 
 ---
 
