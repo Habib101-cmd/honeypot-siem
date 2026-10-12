@@ -449,9 +449,3 @@ Puis ouvrir http://localhost:5601.
 
 **Ghazouani Habib** — Projet de développement et sécurité des réseaux
 GitHub : [@Habib101-cmd](https://github.com/Habib101-cmd)
-
----
-
-_Ce projet est fourni à des fins éducatives, sans garantie. L'auteur décline toute responsabilité en cas d'usage inapproprié._
-
-Claude a terminé sa réponse.
