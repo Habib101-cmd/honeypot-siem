@@ -1,12 +1,29 @@
+# Honeypot SIEM - mini-SOC (Cowrie + Elastic + alertes + rapports)
+# Tous les ports de gestion sont liés à 127.0.0.1 : seuls les ports du honeypot
+# (2222 SSH / 2223 Telnet) sont exposés. Voir README pour l'isolation réseau.
+
+x-es-auth: &es-auth
+  ES_URL: http://elasticsearch:9200
+  ES_USER: elastic
+  ES_PASSWORD: ${ELASTIC_PASSWORD:?définir ELASTIC_PASSWORD dans .env}
+
 services:
   cowrie:
-    image: cowrie/cowrie:latest
+    image: cowrie/cowrie:latest   # fixer un tag/digest précis avant la mise en production
     container_name: cowrie
+    environment:
+      COWRIE_TELNET_ENABLED: "yes"
+      COWRIE_TELNET_LISTEN_ENDPOINTS: "tcp:2223:interface=0.0.0.0"
     ports:
-      - "2222:2222"
+      - "${HONEYPOT_SSH_PORT:-2222}:2222"
+      - "${HONEYPOT_TELNET_PORT:-2223}:2223"
     volumes:
       - cowrie-logs:/cowrie/cowrie-git/var/log/cowrie
       - cowrie-keys:/cowrie/cowrie-git/var/lib/cowrie
+    read_only: false
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
     restart: unless-stopped
 
   elasticsearch:
@@ -14,23 +31,49 @@ services:
     container_name: elasticsearch
     environment:
       - discovery.type=single-node
-      - xpack.security.enabled=false
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:?définir ELASTIC_PASSWORD dans .env}
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     volumes:
       - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:$$ELASTIC_PASSWORD http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
     restart: unless-stopped
+
+  # Initialisation idempotente : mot de passe kibana_system, pipeline GeoIP, templates, ILM
+  setup:
+    image: python:3.12-slim
+    container_name: setup
+    environment:
+      <<: *es-auth
+      KIBANA_PASSWORD: ${KIBANA_PASSWORD:?définir KIBANA_PASSWORD dans .env}
+      RETENTION_DAYS: ${RETENTION_DAYS:-90}
+    volumes:
+      - ./elasticsearch/setup_elasticsearch.py:/setup.py:ro
+    command: sh -c "pip install -q --no-cache-dir requests && python -u /setup.py"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: "no"
 
   kibana:
     image: docker.elastic.co/kibana/kibana:8.15.0
     container_name: kibana
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD:?définir KIBANA_PASSWORD dans .env}
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY:?32+ caractères}
     ports:
-      - "5601:5601"
+      - "127.0.0.1:5601:5601"
     depends_on:
-      - elasticsearch
+      setup:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   filebeat:
@@ -38,11 +81,15 @@ services:
     container_name: filebeat
     user: root
     command: filebeat -e --strict.perms=false
+    environment:
+      ES_USER: elastic
+      ES_PASSWORD: ${ELASTIC_PASSWORD}
     volumes:
       - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
       - cowrie-logs:/var/log/cowrie:ro
     depends_on:
-      - elasticsearch
+      setup:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   alerts:
@@ -50,9 +97,23 @@ services:
     container_name: alerts
     env_file: .env
     environment:
-      - ES_URL=http://elasticsearch:9200
+      <<: *es-auth
     depends_on:
-      - elasticsearch
+      setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  reports:
+    build: ./reports
+    container_name: reports
+    env_file: .env
+    environment:
+      <<: *es-auth
+    volumes:
+      - ./reports/output:/reports
+    depends_on:
+      setup:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:

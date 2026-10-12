@@ -88,7 +88,7 @@ flowchart LR
 
 ```
 honeypot-siem/
-├── docker-compose.yml            # Orchestration des 5 services
+├── docker-compose.yml            # Orchestration des services
 ├── filebeat.yml                  # Configuration de la collecte de logs
 ├── .env.example                  # Modèle de configuration (à copier en .env)
 ├── .gitignore
@@ -100,8 +100,10 @@ honeypot-siem/
 │   └── setup_elasticsearch.py    # Crée le pipeline GeoIP et le template d'index
 ├── kibana/
 │   └── dashboard.ndjson          # Export du dashboard (Saved Objects)
+├── reports/                      # Service de rapports PDF/CSV (F10)
 ├── scripts/
-│   └── simulate_attacks.py       # Génère de fausses attaques
+│   ├── simulate_attacks.py       # Génère de fausses attaques
+│   └── isolate_honeypot.sh       # Blocage des flux sortants du honeypot
 └── docs/
     └── (captures d'écran)
 ```
@@ -158,34 +160,29 @@ cp .env.example .env        # Windows PowerShell : copy .env.example .env
 
 Remplissez `.env` (voir [Configuration](#-configuration)).
 
-### 4. Démarrer Elasticsearch et Kibana
-
-```bash
-docker compose up -d elasticsearch kibana
-```
-
-Attendez 1 à 2 minutes, puis vérifiez :
-
-- Elasticsearch : http://localhost:9200 (doit afficher du JSON)
-- Kibana : http://localhost:5601
-
-### 5. Créer le pipeline GeoIP et le template d'index
-
-```bash
-pip install requests python-dotenv
-python elasticsearch/setup_elasticsearch.py
-```
-
-Vous devez obtenir deux lignes avec le code `200`. Cette étape doit être faite **avant** que Filebeat n'envoie des données.
-
-### 6. Démarrer tous les services
+### 4. Démarrer la stack
 
 ```bash
 docker compose up -d --build
 docker compose ps
 ```
 
-Les 5 conteneurs (`cowrie`, `elasticsearch`, `kibana`, `filebeat`, `alerts`) doivent être **Up**.
+Le service `setup` s'exécute une fois (mot de passe `kibana_system`, pipeline GeoIP, templates, politique de rétention) puis s'arrête ; les autres services démarrent ensuite. Comptez 2 minutes.
+
+- Elasticsearch : http://localhost:9200 (identifiants `elastic` / `ELASTIC_PASSWORD`)
+- Kibana : http://localhost:5601 (même identifiants — **F9 : accès protégé par login**)
+
+Les ports 9200 et 5601 ne sont liés qu'à `127.0.0.1`. Pour y accéder à distance, utilisez un tunnel SSH ou un reverse proxy TLS.
+
+### 5. Activer l'isolation réseau du honeypot (Linux)
+
+```bash
+sudo ./scripts/isolate_honeypot.sh
+```
+
+### 6. Vérifier les conteneurs
+
+Les conteneurs `cowrie`, `elasticsearch`, `kibana`, `filebeat`, `alerts` et `reports` doivent être **Up** (`setup` est « Exited (0) » : c'est normal).
 
 ### 7. Importer le dashboard
 
@@ -224,6 +221,11 @@ ssh-keygen -R "[localhost]:2222"
 | `TELEGRAM_TOKEN`   | Token du bot, fourni par BotFather                                         | `123456:ABC...`               |
 | `TELEGRAM_CHAT_ID` | Identifiant de votre conversation Telegram                                 | `987654321`                   |
 | `BRUTE_THRESHOLD`  | Nombre de tentatives par minute et par IP déclenchant l'alerte brute force | `50` (mettre `5` pour tester) |
+| `ELASTIC_PASSWORD` / `KIBANA_PASSWORD` / `KIBANA_ENCRYPTION_KEY` | Mots de passe et clé de chiffrement (obligatoires) | voir `.env.example` |
+| `SMTP_*`, `ALERT_EMAIL_TO` | Envoi des alertes par email (optionnel) | `smtp.gmail.com`, `587` |
+| `ABUSEIPDB_KEY`, `ABUSE_THRESHOLD` | Score de réputation AbuseIPDB (optionnel, 80 par défaut) | |
+| `SPIKE_FACTOR`, `SPIKE_MIN_EVENTS` | Pic d'activité : x fois la moyenne horaire ET minimum absolu | `3`, `200` |
+| `REPORT_INTERVAL_HOURS`, `RETENTION_DAYS` | Fréquence des rapports ; durée de conservation des logs | `24`, `90` |
 
 > 🔒 Ne publiez **jamais** votre `.env`. Si un token a été exposé, révoquez-le avec `/revoke` dans @BotFather.
 
@@ -268,15 +270,44 @@ geoip.country_name : "China"
 
 ## 🚨 Règles d'alerte
 
-| Règle                      | Condition                                                                         | Message Telegram                              |
-| -------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------- |
-| **Brute force**            | Au moins `BRUTE_THRESHOLD` tentatives de connexion en 1 minute depuis une même IP | `🚨 Brute force : IP (N tentatives en 1 min)` |
-| **Commande dangereuse**    | Une commande contient un mot-clé de la liste `DANGEROUS`                          | `⚠️ Commande dangereuse de IP : commande`     |
-| **IP malveillante connue** | L'IP figure dans la liste blocklist.de                                            | `🔴 IP malveillante connue : IP`              |
+Conformes à la section 7 du cahier des charges. Chaque alerte est aussi archivée dans l'index `honeypot-alerts` (visible dans Kibana, créer une Data View `honeypot-alerts*`).
 
-Chaque alerte identique est limitée à une toutes les 10 minutes (`COOLDOWN`).
+| Règle (`rule`)        | Condition                                                             | Niveau   | Canaux            |
+| --------------------- | --------------------------------------------------------------------- | -------- | ----------------- |
+| `brute_force`         | ≥ `BRUTE_THRESHOLD` tentatives de connexion en 1 min depuis une IP    | Élevé    | Telegram          |
+| `dangerous_command`   | `wget`, `curl`, `chmod +x`, `rm -rf`, `nc`, `bash -i`… dans la session | Critique | Telegram + email  |
+| `malicious_ip`        | Score AbuseIPDB ≥ `ABUSE_THRESHOLD` (ou liste blocklist.de)           | Moyen    | Email             |
+| `file_download`       | Dépôt/téléchargement de fichier sur le honeypot                       | Élevé    | Telegram          |
+| `activity_spike`      | Événements/heure > `SPIKE_FACTOR` x moyenne des 24 h précédentes      | Moyen    | Email             |
 
----
+Anti-doublon : une même alerte (règle + IP) n'est renvoyée qu'après `COOLDOWN` secondes ; les commandes et fichiers ne sont alertés qu'une fois par événement, même après redémarrage. Le délai de détection est d'au plus ~30 s + délai de collecte.
+
+> Les règles sont implémentées en Python (`alerts/rules.py`, `alerts/alert.py`) plutôt qu'avec ElastAlert2 prévu au cahier des charges : même résultat, moins de dépendances. Les tests : `cd alerts && pip install pytest && pytest`.
+
+## 📄 Rapports (F10)
+
+Le service `reports` génère toutes les `REPORT_INTERVAL_HOURS` heures un rapport **PDF et CSV** (totaux jour/semaine/mois, top IP, pays, utilisateurs, mots de passe, commandes) dans `reports/output/`.
+
+## 🛡 Isolation et sécurité (exigences non fonctionnelles)
+
+- `scripts/isolate_honeypot.sh` bloque les connexions sortantes initiées par le conteneur Cowrie (règle `DOCKER-USER`). **Test d'isolation :** `docker exec cowrie sh -c 'wget -T 3 -qO- http://example.com || echo BLOQUE'` doit afficher `BLOQUE`.
+- Pour l'exposition sur Internet, utilisez une VM/VPS dédiée sans aucune donnée réelle, faites écouter votre vrai SSH sur un autre port, et publiez `HONEYPOT_SSH_PORT=22` seulement après cela.
+- Elasticsearch et Kibana exigent un login ; Cowrie tourne sans capabilities Linux avec une limite mémoire.
+- **Résilience (test) :** `docker kill cowrie` → le conteneur redémarre seul (`restart: unless-stopped`).
+
+## ✅ Plan de tests (section 9 du cahier des charges)
+
+| Test | Commande | Résultat attendu |
+| ---- | -------- | ---------------- |
+| Connexion | `ssh -p 2222 root@localhost` | Événement dans Kibana Discover |
+| Telnet | `telnet localhost 2223` | Événement `cowrie.session.connect` |
+| Brute force | `hydra -l root -P pass.txt -t 4 ssh://IP -s 2222` ou `python scripts/simulate_attacks.py burst` | Alerte Telegram < 1 min |
+| Scan de ports | `nmap -sS -p 2222,2223 IP` | Connexions enregistrées |
+| Commande dangereuse | `wget http://x` dans la session, ou `simulate_attacks.py command` | Alerte critique Telegram + email |
+| Pic d'activité | `python scripts/simulate_attacks.py spike` | Alerte email |
+| Résilience / Isolation | voir ci-dessus | Reprise auto / flux bloqué |
+
+Le simulateur lit `ELASTIC_PASSWORD` dans l'environnement : `ELASTIC_PASSWORD=... python scripts/simulate_attacks.py burst`.
 
 ## 📊 Dashboard Kibana
 

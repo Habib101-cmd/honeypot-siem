@@ -17,6 +17,8 @@ filebeat.inputs:
 
 output.elasticsearch:
   hosts: ["http://elasticsearch:9200"]
+  username: "${ES_USER}"
+  password: "${ES_PASSWORD}"
   index: "cowrie-%{+yyyy.MM.dd}"
   pipeline: "cowrie-geoip"
 

